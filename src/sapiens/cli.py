@@ -5,14 +5,17 @@ from __future__ import annotations
 import argparse
 import json
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 from .adapters import SyntheticLinearAdapter, SyntheticThresholdAdapter
 from .bridge import transfer
 from .budget import ExecutionContext
+from .discovery import DiscoveryDriver
 from .kernel import DiscoveryKernel
 from .ledger import EvidenceLedger
 from .models import EvidenceLevel
+from .queue import WorkQueue
 
 
 def run_demo(workdir: Path) -> dict[str, object]:
@@ -43,16 +46,86 @@ def run_demo(workdir: Path) -> dict[str, object]:
     }
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Run a bounded synthetic SAPIENS demonstration")
-    parser.add_argument("--workdir", type=Path)
-    args = parser.parse_args()
-    if args.workdir:
-        args.workdir.mkdir(parents=True, exist_ok=True)
-        result = run_demo(args.workdir)
+def run_discovery(
+    workdir: Path,
+    *,
+    seed: int = 7,
+    max_jobs: int = 20,
+    max_seconds: float = 10.0,
+    steps_per_job: int = 20,
+    limit_per_adapter: int = 2,
+) -> dict[str, object]:
+    """Run the autonomous discovery driver over the synthetic adapters."""
+    ledger = EvidenceLedger(workdir / "evidence.jsonl")
+    kernel = DiscoveryKernel(ledger)
+    queue = WorkQueue(workdir / "discovery-queue.sqlite3")
+    linear = SyntheticLinearAdapter()
+    threshold = SyntheticThresholdAdapter()
+    adapters = {linear.manifest.name: linear, threshold.manifest.name: threshold}
+    driver = DiscoveryDriver(adapters=adapters, queue=queue, kernel=kernel, seed=seed)
+    driver.plan(limit_per_adapter=limit_per_adapter)
+    report = driver.run(
+        worker="discovery-1",
+        max_jobs=max_jobs,
+        max_seconds=max_seconds,
+        steps_per_job=steps_per_job,
+    )
+    return {
+        "experimental": True,
+        "scientific_discoveries_claimed": report.scientific_discoveries_claimed,
+        "proposed": report.proposed,
+        "reached_l3": list(report.reached_l3),
+        "reached_l2": report.reached_l2,
+        "reached_l1": report.reached_l1,
+        "stayed_l0": report.stayed_l0,
+        "exhausted": report.exhausted,
+        "ledger_verified": report.ledger_verified,
+    }
+
+
+@contextmanager
+def _workdir(path: Path | None):
+    if path is not None:
+        path.mkdir(parents=True, exist_ok=True)
+        yield path
     else:
         with tempfile.TemporaryDirectory() as directory:
-            result = run_demo(Path(directory))
+            yield Path(directory)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run a bounded synthetic SAPIENS workflow")
+    sub = parser.add_subparsers(dest="command")
+
+    demo_parser = sub.add_parser("demo", help="synthetic cross-domain demo (default)")
+    demo_parser.add_argument("--workdir", type=Path)
+
+    discover_parser = sub.add_parser("discover", help="autonomous discovery driver")
+    discover_parser.add_argument("--workdir", type=Path)
+    discover_parser.add_argument("--seed", type=int, default=7)
+    discover_parser.add_argument("--max-jobs", type=int, default=20)
+    discover_parser.add_argument("--max-seconds", type=float, default=10.0)
+    discover_parser.add_argument("--steps-per-job", type=int, default=20)
+    discover_parser.add_argument("--limit-per-adapter", type=int, default=2)
+
+    args = parser.parse_args()
+
+    if args.command == "discover":
+        with _workdir(args.workdir) as workdir:
+            result = run_discovery(
+                workdir,
+                seed=args.seed,
+                max_jobs=args.max_jobs,
+                max_seconds=args.max_seconds,
+                steps_per_job=args.steps_per_job,
+                limit_per_adapter=args.limit_per_adapter,
+            )
+    else:
+        # No subcommand (backward compatible) or explicit "demo".
+        workdir_arg = args.workdir if args.command == "demo" else None
+        with _workdir(workdir_arg) as workdir:
+            result = run_demo(workdir)
+
     print(json.dumps(result, indent=2, sort_keys=True))
 
 
