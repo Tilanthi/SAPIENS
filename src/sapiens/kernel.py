@@ -15,11 +15,23 @@ _STAGE_BY_LEVEL = {
 
 
 class DiscoveryKernel:
-    def __init__(self, ledger: EvidenceLedger) -> None:
+    def __init__(self, ledger: EvidenceLedger, *, registry: object | None = None) -> None:
         self.ledger = ledger
+        self.registry = registry
 
     def register(self, candidate: Candidate, *, transferred_from: str | None = None) -> None:
         self.ledger.record_candidate(candidate.candidate_id, transferred_from=transferred_from)
+
+    def _admit(self, adapter: DomainAdapter) -> None:
+        # With a registry, admission is registry-governed (Phase 1). Without one, the
+        # strict validate_adapter backstop refuses non-synthetic adapters (Phase 0).
+        if self.registry is not None:
+            if adapter.manifest.name not in self.registry:
+                raise ValueError(
+                    f"adapter {adapter.manifest.name!r} is not admitted by the registry"
+                )
+        else:
+            validate_adapter(adapter)
 
     def validate_next(
         self,
@@ -29,7 +41,7 @@ class DiscoveryKernel:
         seed: int,
         context: ExecutionContext,
     ) -> EvidenceLevel:
-        validate_adapter(adapter)
+        self._admit(adapter)
         if candidate.domain != adapter.manifest.domain:
             raise ValueError("candidate domain does not match adapter")
         current = self.ledger.state(candidate.candidate_id).level

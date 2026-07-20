@@ -69,8 +69,10 @@ class AdapterManifest:
     def __post_init__(self) -> None:
         if not self.name or not self.version or not self.domain:
             raise ValueError("adapter manifest fields must be non-empty")
-        if not self.synthetic_only:
-            raise ValueError("Phase 0 accepts synthetic-only adapters")
+        # ``synthetic_only`` is a declared flag. Admission of non-synthetic adapters is
+        # governed by the trust registry (Phase 1, ``sapiens.trust``) or, on the default
+        # kernel path, refused by ``validate_adapter``. The manifest no longer refuses to
+        # construct a non-synthetic declaration.
 
 
 @dataclass(frozen=True)
