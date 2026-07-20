@@ -7,7 +7,7 @@ import json
 import tempfile
 from pathlib import Path
 
-from .adapters import SyntheticLinearAdapter, SyntheticThresholdAdapter
+from .adapters import SyntheticLinearAdapter, SyntheticPhotometryAdapter, SyntheticThresholdAdapter
 from .bridge import transfer
 from .budget import ExecutionContext
 from .kernel import DiscoveryKernel
@@ -34,11 +34,37 @@ def run_demo(workdir: Path) -> dict[str, object]:
         source, source_level, target_adapter, candidate_id="cross-domain-demo"
     )
     kernel.register(imported, transferred_from=source.candidate_id)
+
+    # Photometry: a periodic synthetic domain, promoted through the ladder, then
+    # transferred into the ecology (threshold) domain — confidence resets to L0.
+    photometry_adapter = SyntheticPhotometryAdapter()
+    photometry = photometry_adapter.propose(seed=21, limit=1)[0]
+    kernel.register(photometry)
+    photometry_level = EvidenceLevel.L0
+    for seed in (22, 23):
+        photometry_level = kernel.validate_next(
+            photometry_adapter,
+            photometry,
+            seed=seed,
+            context=ExecutionContext(max_steps=10, max_seconds=2),
+        )
+    photometry_imported, photometry_imported_level, _ = transfer(
+        photometry, photometry_level, target_adapter, candidate_id="cross-domain-photometry"
+    )
+    kernel.register(photometry_imported, transferred_from=photometry.candidate_id)
     return {
         "experimental": True,
         "scientific_discoveries_claimed": 0,
         "source": {"domain": source.domain, "level": source_level.name},
         "transfer": {"target_domain": imported.domain, "level": imported_level.name},
+        "photometry": {
+            "domain": photometry.domain,
+            "level": photometry_level.name,
+            "transfer": {
+                "target_domain": photometry_imported.domain,
+                "level": photometry_imported_level.name,
+            },
+        },
         "ledger_verified": ledger.verify(),
     }
 
