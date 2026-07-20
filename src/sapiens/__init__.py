@@ -2,6 +2,7 @@
 
 from .adapter import DomainAdapter
 from .bridge import TransferEnvelope, transfer
+from .discovery import DiscoveryDriver, DiscoveryReport
 from .kernel import DiscoveryKernel
 from .ledger import EvidenceLedger
 from .models import AdapterManifest, Candidate, Evidence, EvidenceLevel
@@ -9,7 +10,9 @@ from .models import AdapterManifest, Candidate, Evidence, EvidenceLevel
 __all__ = [
     "AdapterManifest",
     "Candidate",
+    "DiscoveryDriver",
     "DiscoveryKernel",
+    "DiscoveryReport",
     "DomainAdapter",
     "Evidence",
     "EvidenceLedger",
