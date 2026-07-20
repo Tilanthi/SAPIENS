@@ -12,9 +12,11 @@ from .adapters import SyntheticLinearAdapter, SyntheticPhotometryAdapter, Synthe
 from .bridge import transfer
 from .budget import ExecutionContext
 from .discovery import DiscoveryDriver
+from .discovery_store import DiscoveryStore
 from .kernel import DiscoveryKernel
 from .ledger import EvidenceLedger
 from .models import EvidenceLevel
+from .ongoing import run_ongoing
 from .queue import WorkQueue
 
 
@@ -134,6 +136,15 @@ def main() -> None:
     discover_parser.add_argument("--steps-per-job", type=int, default=20)
     discover_parser.add_argument("--limit-per-adapter", type=int, default=2)
 
+    ongoing_parser = sub.add_parser(
+        "discover-ongoing", help="ongoing wide discovery sweep into the persistent store"
+    )
+    ongoing_parser.add_argument(
+        "--store", type=Path, default=Path(".sapiens_state/discovery.sqlite3")
+    )
+    ongoing_parser.add_argument("--seed", type=int, default=None)
+    ongoing_parser.add_argument("--run-id", default=None)
+
     args = parser.parse_args()
 
     if args.command == "discover":
@@ -146,6 +157,20 @@ def main() -> None:
                 steps_per_job=args.steps_per_job,
                 limit_per_adapter=args.limit_per_adapter,
             )
+    elif args.command == "discover-ongoing":
+        result = {"experimental": True, "scientific_discoveries_claimed": 0}
+        result.update(run_ongoing(args.store, seed=args.seed, run_id=args.run_id))
+        if result.get("swept", 0) > 0:
+            top = DiscoveryStore(args.store).top_for_l4(limit=10)
+            result["top_for_l4"] = [
+                {
+                    "candidate_id": r.candidate_id,
+                    "domain": r.domain,
+                    "score": round(r.score, 4),
+                    "claim": r.claim,
+                }
+                for r in top
+            ]
     else:
         # No subcommand (backward compatible) or explicit "demo".
         workdir_arg = args.workdir if args.command == "demo" else None
