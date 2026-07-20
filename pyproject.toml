@@ -22,6 +22,7 @@ classifiers = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<9", "ruff>=0.6,<1"]
+fits = ["astropy>=5", "numpy>=1.24"]  # only for the Mopra FITS connector (VETTED adapter)
 
 [project.scripts]
 sapiens = "sapiens.cli:main"
