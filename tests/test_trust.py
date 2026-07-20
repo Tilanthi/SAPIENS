@@ -8,7 +8,9 @@ from sapiens.budget import ExecutionContext
 from sapiens.models import AdapterManifest, Candidate, Evidence
 from sapiens.trust import AdapterRegistry, TrustTier
 
-CTX = ExecutionContext(20, 5)
+
+def _ctx() -> ExecutionContext:
+    return ExecutionContext(20, 5)
 
 
 class _RealAdapter:
@@ -100,7 +102,7 @@ def test_kernel_admits_non_synthetic_via_registry(tmp_path: Path):
     candidate = adapter.propose(seed=1, limit=1)[0]
     kernel.register(candidate)
     # admitted via registry -> validate_next proceeds and promotes
-    assert kernel.validate_next(adapter, candidate, seed=10, context=CTX) == EvidenceLevel.L1
+    assert kernel.validate_next(adapter, candidate, seed=10, context=_ctx()) == EvidenceLevel.L1
     assert ledger.verify() is True
 
 
@@ -111,7 +113,7 @@ def test_kernel_without_registry_refuses_non_synthetic(tmp_path: Path):
     candidate = adapter.propose(seed=1, limit=1)[0]
     kernel.register(candidate)
     with pytest.raises(ValueError):
-        kernel.validate_next(adapter, candidate, seed=10, context=CTX)
+        kernel.validate_next(adapter, candidate, seed=10, context=_ctx())
 
 
 def test_kernel_with_registry_refuses_unregistered(tmp_path: Path):
@@ -122,4 +124,4 @@ def test_kernel_with_registry_refuses_unregistered(tmp_path: Path):
     candidate = adapter.propose(seed=1, limit=1)[0]
     kernel.register(candidate)
     with pytest.raises(ValueError):
-        kernel.validate_next(adapter, candidate, seed=10, context=CTX)
+        kernel.validate_next(adapter, candidate, seed=10, context=_ctx())
