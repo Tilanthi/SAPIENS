@@ -37,6 +37,21 @@ class Candidate:
             raise ValueError("candidate_id, domain, and claim must be non-empty")
         object.__setattr__(self, "parameters", frozen_mapping(self.parameters))
 
+    def __getstate__(self) -> dict[str, Any]:
+        # MappingProxyType is not picklable; serialise parameters as a plain dict.
+        return {
+            "candidate_id": self.candidate_id,
+            "domain": self.domain,
+            "claim": self.claim,
+            "parameters": dict(self.parameters),
+            "parent_id": self.parent_id,
+            "source_adapter": self.source_adapter,
+        }
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        for key, value in state.items():
+            object.__setattr__(self, key, frozen_mapping(value) if key == "parameters" else value)
+
 
 @dataclass(frozen=True)
 class Evidence:
@@ -56,6 +71,23 @@ class Evidence:
         if self.score is not None and not 0.0 <= self.score <= 1.0:
             raise ValueError("score must be within [0, 1]")
         object.__setattr__(self, "details", frozen_mapping(self.details))
+
+    def __getstate__(self) -> dict[str, Any]:
+        return {
+            "evidence_id": self.evidence_id,
+            "candidate_id": self.candidate_id,
+            "kind": self.kind,
+            "passed": self.passed,
+            "protocol": self.protocol,
+            "dataset": self.dataset,
+            "seed": self.seed,
+            "score": self.score,
+            "details": dict(self.details),
+        }
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        for key, value in state.items():
+            object.__setattr__(self, key, frozen_mapping(value) if key == "details" else value)
 
 
 @dataclass(frozen=True)

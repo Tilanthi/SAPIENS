@@ -19,7 +19,7 @@ from typing import Any
 from .models import Evidence, EvidenceLevel
 
 GENESIS = "0" * 64
-_ALLOWED_KINDS = {"candidate", "evidence", "promotion", "demotion", "transfer"}
+_ALLOWED_KINDS = {"candidate", "evidence", "promotion", "demotion", "transfer", "checkpoint"}
 
 
 def _canonical(value: Any) -> bytes:
@@ -89,6 +89,12 @@ class EvidenceLedger:
             digest = hashlib.sha256(_canonical(unsigned)).hexdigest()
             if digest != event.event_hash:
                 raise LedgerIntegrityError("event hash mismatch")
+            if event.kind == "checkpoint":
+                # global integrity marker: participates in the hash chain but carries no
+                # candidate-state transition
+                previous = event.event_hash
+                expected_seq += 1
+                continue
             current = states.get(event.candidate_id)
             if event.kind in {"candidate", "transfer"}:
                 if current is not None or event.payload.get("level") != 0:
@@ -236,4 +242,19 @@ class EvidenceLedger:
             "demotion",
             candidate_id,
             {"to_level": int(to_level), "evidence_refs": list(evidence_refs), "reason": reason},
+        )
+
+    def checkpoint(self, *, signer: str = "", note: str = "") -> LedgerEvent:
+        """Append a hash-chained integrity checkpoint anchoring the current tip.
+
+        The ``signer`` is recorded provenance, not a cryptographic signature (external
+        anchoring / signing is a roadmap item). The checkpoint participates in the
+        tamper-evident hash chain but carries no candidate-state transition.
+        """
+        events = self._read_unlocked()
+        tip = events[-1].event_hash if events else GENESIS
+        return self.append(
+            "checkpoint",
+            "__checkpoint__",
+            {"tip": tip, "signer": signer, "note": note},
         )
