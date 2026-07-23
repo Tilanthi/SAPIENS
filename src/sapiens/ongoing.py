@@ -271,3 +271,202 @@ def run_anomaly_scan(registry_path: str | Path, *, seed: int | None = None) -> d
                 found += 1
 
     return {"anomalies_found": found, "seed": seed, "registry_size": len(registry)}
+
+
+# --- full model-mismatch detector (priority 1d) -----------------------------------
+
+
+def detect_model_mismatch(registry_path: str | Path, *, seed: int | None = None) -> dict:
+    """Detect sign-flips and ceiling violations in real SDSS data.
+
+    Sign-flip: does the u-band <-> z_spec correlation flip sign or drop sharply between
+    bright and faint magnitude subsamples? If so, the relationship is not universal — a
+    model mismatch. Ceiling violation: any object with physically impossible values.
+    """
+    from .anomaly import AnomalyRegistry
+    from .validation import pearson
+
+    if seed is None:
+        seed = int(time.time()) % 1_000_000
+    registry = AnomalyRegistry(registry_path)
+    found = 0
+
+    if PHOTOZ_CSV.exists():
+        adapter = SDSSPhotozAdapter.from_csv(PHOTOZ_CSV)
+        rows = adapter._rows  # type: ignore[attr-defined]
+        median_u = _median([r.u for r in rows])
+        bright = [r for r in rows if r.u < median_u]
+        faint = [r for r in rows if r.u >= median_u]
+        rb = pearson([r.u for r in bright], [r.z_spec for r in bright])
+        rf = pearson([r.u for r in faint], [r.z_spec for r in faint])
+        delta = abs(rb.r - rf.r)
+        sign_flip = rb.r * rf.r < 0
+        if sign_flip or delta > 0.3:
+            registry.register(
+                anomaly_id=f"photoz-signflip:{seed}",
+                domain="sdss-photoz",
+                kind="model_mismatch",
+                description=(
+                    f"u-z correlation {'SIGN-FLIPS' if sign_flip else 'drops sharply'} "
+                    f"between bright (r={rb.r:.3f}) and faint (r={rf.r:.3f}) subsamples "
+                    f"(delta={delta:.3f})"
+                ),
+                severity=min(1.0, delta),
+                object_ref="population-level",
+                details_json=json.dumps(
+                    {
+                        "r_bright": round(rb.r, 4),
+                        "r_faint": round(rf.r, 4),
+                        "delta": round(delta, 4),
+                    }
+                ),
+            )
+            found += 1
+
+        for r in rows:
+            if r.u < 10.0 or r.z_spec < -0.01 or r.z_spec > 10.0:
+                registry.register(
+                    anomaly_id=f"photoz-ceiling:ra={r.ra:.4f}:dec={r.dec:.4f}",
+                    domain="sdss-photoz",
+                    kind="ceiling_violation",
+                    description=f"extreme value: u={r.u:.2f}, z_spec={r.z_spec:.5f}",
+                    severity=0.8,
+                    object_ref=f"ra={r.ra:.4f},dec={r.dec:.4f}",
+                    details_json=json.dumps({"u": r.u, "z_spec": r.z_spec}),
+                )
+                found += 1
+
+    return {"mismatches_found": found, "seed": seed}
+
+
+# --- cross-method tension register (priority 1c) -----------------------------------
+
+
+def record_tensions(tension_path: str | Path, *, seed: int | None = None) -> dict:
+    """Record precision-quantity estimates from multiple methods for tension tracking."""
+    from .tension import TensionRegister, fisher_z_ci
+    from .validation import pearson, proportion_ci
+
+    if seed is None:
+        seed = int(time.time()) % 1_000_000
+    register = TensionRegister(tension_path)
+    recorded = 0
+
+    if PHOTOZ_CSV.exists():
+        adapter = SDSSPhotozAdapter.from_csv(PHOTOZ_CSV)
+        rows = adapter._rows  # type: ignore[attr-defined]
+        for band_label, attr in [
+            ("u_band", "u"), ("g_band", "g"), ("r_band", "r"),
+            ("i_band", "i"), ("z_band", "z_mag"),
+        ]:
+            vals = [getattr(r, attr) for r in rows]
+            zs = [r.z_spec for r in rows]
+            result = pearson(vals, zs)
+            ci_lo, ci_hi = fisher_z_ci(result.r, result.n)
+            register.record(
+                "photoz_correlation", band_label, result.r,
+                ci_lo, ci_hi, seed, f"ongoing-{seed}",
+            )
+            recorded += 1
+
+    if CLASS_CSV.exists():
+        adapter = SDSSClassificationAdapter.from_csv(CLASS_CSV)
+        rows = adapter._rows  # type: ignore[attr-defined]
+        for pred_label, pred_fn in [
+            ("r-i", lambda r: r.r - r.i),
+            ("g-r", lambda r: r.g - r.r),
+        ]:
+            split = holdout_split(len(rows), train_fraction=0.5, seed=seed)
+            train = [rows[i] for i in split.train]
+            test = [rows[i] for i in split.test]
+            train_vals = [pred_fn(r) for r in train]
+            train_labels = [r.is_star for r in train]
+            threshold, sign = adapter._learn_threshold(train_vals, train_labels)
+            correct = sum(
+                1 for r in test if (pred_fn(r) * sign > threshold * sign) == r.is_star
+            )
+            ci = proportion_ci(correct, len(test))
+            register.record(
+                "classification_accuracy", pred_label, ci.point,
+                ci.lower, ci.upper, seed, f"ongoing-{seed}",
+            )
+            recorded += 1
+
+    return {"tensions_recorded": recorded, "seed": seed, "register_size": len(register)}
+
+
+# --- systematic sieve (priority 1b) ------------------------------------------------
+
+
+def run_sieve(anomaly_registry_path: str | Path, *, seed: int | None = None) -> dict:
+    """Run systematic checks on detected anomaly populations."""
+    from .anomaly import AnomalyRegistry
+    from .sieve import sieve_population
+
+    if seed is None:
+        seed = int(time.time()) % 1_000_000
+    registry = AnomalyRegistry(anomaly_registry_path)
+    results: list = []
+
+    if PHOTOZ_CSV.exists():
+        adapter = SDSSPhotozAdapter.from_csv(PHOTOZ_CSV)
+        rows = adapter._rows  # type: ignore[attr-defined]
+        sample_ras = [r.ra for r in rows]
+        sample_mags = [r.u for r in rows]
+        anomalies = [
+            a for a in registry.top(limit=500)
+            if a.domain == "sdss-photoz" and a.kind == "structured_residual"
+        ]
+        ra_lookup = {(round(r.ra, 4), round(r.dec, 4)): r for r in rows}
+        anomaly_mags: list[float] = []
+        for a in anomalies:
+            import re
+            m = re.search(r"ra=([-\d.]+),dec=([-\d.]+)", a.object_ref)
+            if m:
+                key = (round(float(m.group(1)), 4), round(float(m.group(2)), 4))
+                if key in ra_lookup:
+                    anomaly_mags.append(ra_lookup[key].u)
+        result = sieve_population(
+            anomalies, sample_ras, sample_mags, anomaly_mags, domain="sdss-photoz"
+        )
+        results.append(result)
+
+    if CLASS_CSV.exists():
+        adapter = SDSSClassificationAdapter.from_csv(CLASS_CSV)
+        rows = adapter._rows  # type: ignore[attr-defined]
+        sample_ras = [r.ra for r in rows]
+        sample_mags = [r.r for r in rows]
+        anomalies = [
+            a for a in registry.top(limit=500)
+            if a.domain == "sdss-classification" and a.kind == "template_rejection"
+        ]
+        ra_lookup = {(round(r.ra, 4), round(r.dec, 4)): r for r in rows}
+        anomaly_mags_cls: list[float] = []
+        for a in anomalies:
+            import re
+            m = re.search(r"ra=([-\d.]+),dec=([-\d.]+)", a.object_ref)
+            if m:
+                key = (round(float(m.group(1)), 4), round(float(m.group(2)), 4))
+                if key in ra_lookup:
+                    anomaly_mags_cls.append(ra_lookup[key].r)
+        result = sieve_population(
+            anomalies, sample_ras, sample_mags, anomaly_mags_cls, domain="sdss-classification"
+        )
+        results.append(result)
+
+    return {
+        "sieve_runs": len(results),
+        "results": [
+            {
+                "domain": r.domain,
+                "n_anomalies": r.n_anomalies,
+                "survived": r.survived,
+                "robustness": round(r.robustness, 3),
+                "checks": [
+                    {"name": c.name, "passed": c.passed, "detail": c.detail}
+                    for c in r.checks
+                ],
+            }
+            for r in results
+        ],
+    }
