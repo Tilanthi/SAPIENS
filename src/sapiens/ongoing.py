@@ -118,6 +118,7 @@ def run_ongoing(store_path: str | Path, *, seed: int | None = None, run_id: str 
         )
 
     swept = reached_l3 = 0
+    photoz_pvals: list[float] = []
     for adapter, candidates in sources:
         with tempfile.TemporaryDirectory() as directory:
             ledger = EvidenceLedger(Path(directory) / "evidence.jsonl")
@@ -136,13 +137,20 @@ def run_ongoing(store_path: str | Path, *, seed: int | None = None, run_id: str 
                     if reached == level:
                         break
                     level = reached
-                scores = [
-                    float(event.payload["score"])
-                    for event in ledger.events()
-                    if event.candidate_id == candidate.candidate_id
-                    and event.kind == "evidence"
-                    and event.payload.get("score") is not None
+                ev_events = [
+                    e for e in ledger.events()
+                    if e.candidate_id == candidate.candidate_id
+                    and e.kind == "evidence"
                 ]
+                scores = [
+                    float(e.payload["score"])
+                    for e in ev_events
+                    if e.payload.get("score") is not None
+                ]
+                for e in ev_events:
+                    pval = e.payload.get("details", {}).get("pvalue")
+                    if pval is not None:
+                        photoz_pvals.append(float(pval))
                 store.record(
                     key,
                     candidate.domain,
@@ -155,7 +163,30 @@ def run_ongoing(store_path: str | Path, *, seed: int | None = None, run_id: str 
                 swept += 1
                 if level == EvidenceLevel.L3:
                     reached_l3 += 1
-    return {"swept": swept, "reached_l3": reached_l3, "seed": seed, "store_size": len(store)}
+    # FDR control across the candidate family (Stage C)
+    from .validation import benjamini_hochberg as _bh
+
+    if len(photoz_pvals) >= 2:
+        bh_result = _bh(photoz_pvals, alpha=0.05)
+        fdr_survivors = sum(bh_result.rejected)
+    else:
+        fdr_survivors = len(photoz_pvals)
+
+    # auto-run anomaly scan (Stage B)
+    anomaly_path = Path(store_path).parent / "anomalies.sqlite3"
+    try:
+        anomaly_result = run_anomaly_scan(anomaly_path, seed=seed)
+    except Exception:
+        anomaly_result = {"anomalies_found": 0}
+
+    return {
+        "swept": swept,
+        "reached_l3": reached_l3,
+        "seed": seed,
+        "store_size": len(store),
+        "fdr_survivors": fdr_survivors,
+        "anomalies_found": anomaly_result.get("anomalies_found", 0),
+    }
 
 
 # --- anomaly detection (discovery substrate v1) -----------------------------------

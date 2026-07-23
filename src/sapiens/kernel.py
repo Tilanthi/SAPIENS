@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 from .adapter import DomainAdapter, validate_adapter
 from .budget import ExecutionContext
@@ -27,6 +28,15 @@ class DiscoveryKernel:
 
     def register(self, candidate: Candidate, *, transferred_from: str | None = None) -> None:
         self.ledger.record_candidate(candidate.candidate_id, transferred_from=transferred_from)
+        # pre-registration hash (Stage D): commit to the analysis before data
+        prereg = hashlib.sha256(
+            json.dumps(
+                {"id": candidate.candidate_id, "claim": candidate.claim,
+                 "parameters": dict(candidate.parameters)},
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()[:16]
+        self.ledger.append("preregistration", candidate.candidate_id, {"hash": prereg})
 
     def _admit(self, adapter: DomainAdapter) -> None:
         # With a registry, admission is registry-governed (Phase 1). Without one, the

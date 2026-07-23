@@ -19,7 +19,10 @@ from typing import Any
 from .models import Evidence, EvidenceLevel
 
 GENESIS = "0" * 64
-_ALLOWED_KINDS = {"candidate", "evidence", "promotion", "demotion", "transfer", "checkpoint"}
+_ALLOWED_KINDS = {
+    "candidate", "evidence", "promotion", "demotion",
+    "transfer", "checkpoint", "preregistration",
+}
 
 
 def _canonical(value: Any) -> bytes:
@@ -89,7 +92,7 @@ class EvidenceLedger:
             digest = hashlib.sha256(_canonical(unsigned)).hexdigest()
             if digest != event.event_hash:
                 raise LedgerIntegrityError("event hash mismatch")
-            if event.kind == "checkpoint":
+            if event.kind in ("checkpoint", "preregistration"):
                 # global integrity marker: participates in the hash chain but carries no
                 # candidate-state transition
                 previous = event.event_hash
@@ -161,6 +164,8 @@ class EvidenceLedger:
                 level = EvidenceLevel.L0
             elif event.kind == "evidence":
                 evidence_ids.add(str(event.payload["evidence_id"]))
+            elif event.kind in ("checkpoint", "preregistration"):
+                continue
             else:
                 level = EvidenceLevel(int(event.payload["to_level"]))
         if level is None:

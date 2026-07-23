@@ -32,6 +32,10 @@ def transfer(
     structure = {
         "relation": source.parameters.get("relation", "unknown"),
         "arity": source.parameters.get("arity", 1),
+        "predictor": source.parameters.get("predictor", ""),
+        "method": source.parameters.get(
+            "claim_type", source.parameters.get("method", "")
+        ),
         "_source_candidate_id": source.candidate_id,
     }
     envelope = TransferEnvelope(

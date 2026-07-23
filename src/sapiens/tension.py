@@ -128,6 +128,26 @@ class TensionRegister:
                         )
             return sorted(results, key=lambda t: (not t.persistent_disagreement, t.overlap))
 
+    def ingest_external(
+        self,
+        quantity: str,
+        method: str,
+        value: float,
+        ci_lower: float,
+        ci_upper: float,
+        *,
+        citation: str,
+    ) -> None:
+        """Ingest a published external result (Stage K).
+
+        E.g. Planck H0 vs SH0ES H0 — two external methods with disjoint systematics.
+        Uses seed=-1 to distinguish from SAPIENS-internal runs.
+        """
+        self.record(
+            quantity, method, value, ci_lower, ci_upper,
+            seed=-1, run_id=f"external:{citation}",
+        )
+
     def __len__(self) -> int:
         with sqlite3.connect(self.path) as conn:
             return int(conn.execute("SELECT COUNT(*) FROM estimates").fetchone()[0])
