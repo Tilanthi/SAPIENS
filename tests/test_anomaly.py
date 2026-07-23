@@ -41,8 +41,11 @@ def test_registry_counts_by_kind(tmp_path: Path):
 
 
 @pytest.mark.skipif(not _PHOTOZ.exists(), reason="needs SDSS photoz cache")
-def test_anomaly_scan_finds_outliers_on_real_data(tmp_path: Path):
+def test_anomaly_scan_finds_outliers_on_real_data(tmp_path: Path, monkeypatch):
+    import sapiens.ongoing as ongoing_mod
+
+    monkeypatch.setattr(ongoing_mod, "PHOTOZ_CSV", _PHOTOZ)
     from sapiens.ongoing import run_anomaly_scan
 
     result = run_anomaly_scan(tmp_path / "a.db", seed=42)
-    assert result["anomalies_found"] > 0  # real data has outlier objects
+    assert result["anomalies_found"] > 0

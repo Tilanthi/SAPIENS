@@ -29,8 +29,11 @@ _ASTRA_DATA = Path(
     "/Users/gjw255/astrodata/SWARM/ASTRA-dev-main/astra_core/scientific_discovery/"
     "evolved_analysis/data"
 )
-PHOTOZ_CSV = _ASTRA_DATA / "photoz_sdss_cache.csv"
-CLASS_CSV = _ASTRA_DATA / "sdss_class_cache.csv"
+# SDSS is intentionally disabled from active discovery — the system has moved
+# beyond textbook recovery. The connectors remain in the codebase for replication;
+# set these to the real ASTRA-dev paths to re-enable.
+PHOTOZ_CSV = Path("/nonexistent/sdss-disabled-photoz")
+CLASS_CSV = Path("/nonexistent/sdss-disabled-class")
 
 _MOPRA_DIR = Path("/Users/gjw255/astrodata/MOPRA_SgrB2")
 _MOPRA_CUBES = [
