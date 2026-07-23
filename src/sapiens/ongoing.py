@@ -10,6 +10,7 @@ the store tracks each candidate's evidence over time. The store never claims a d
 
 from __future__ import annotations
 
+import json
 import tempfile
 import time
 from pathlib import Path
@@ -22,6 +23,7 @@ from .kernel import DiscoveryKernel
 from .ledger import EvidenceLedger
 from .models import Candidate, EvidenceLevel
 from .trust import AdapterRegistry
+from .validation import holdout_split
 
 _ASTRA_DATA = Path(
     "/Users/gjw255/astrodata/SWARM/ASTRA-dev-main/astra_core/scientific_discovery/"
@@ -154,3 +156,118 @@ def run_ongoing(store_path: str | Path, *, seed: int | None = None, run_id: str 
                 if level == EvidenceLevel.L3:
                     reached_l3 += 1
     return {"swept": swept, "reached_l3": reached_l3, "seed": seed, "store_size": len(store)}
+
+
+# --- anomaly detection (discovery substrate v1) -----------------------------------
+
+
+def _median(values: list[float]) -> float:
+    s = sorted(values)
+    n = len(s)
+    return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+
+
+def _mad_sigma(values: list[float]) -> float:
+    """Median absolute deviation converted to a sigma-equivalent scale (×1.4826)."""
+    m = _median(values)
+    return 1.4826 * _median([abs(v - m) for v in values]) or 1e-9
+
+
+def run_anomaly_scan(registry_path: str | Path, *, seed: int | None = None) -> dict:
+    """Detect model-mismatch anomalies in real SDSS data and register them.
+
+    Photoz: flags objects whose z_spec residual from a u-band linear model exceeds
+    4 sigma (MAD-scaled). Classification: flags objects misclassified by the learned
+    r-i threshold. Each anomaly is registered with a survivability score; nothing is
+    auto-discarded. These are NOT discoveries — they are "this doesn't fit; look here."
+    """
+    from .anomaly import AnomalyRegistry
+
+    if seed is None:
+        seed = int(time.time()) % 1_000_000
+    registry = AnomalyRegistry(registry_path)
+    found = 0
+
+    if PHOTOZ_CSV.exists():
+        adapter = SDSSPhotozAdapter.from_csv(PHOTOZ_CSV)
+        rows = adapter._rows  # type: ignore[attr-defined]
+        split = holdout_split(len(rows), train_fraction=0.5, seed=seed)
+        train = [rows[i] for i in split.train]
+        test = [rows[i] for i in split.test]
+        # fit z = a + b*u on train
+        us = [r.u for r in train]
+        zs = [r.z_spec for r in train]
+        mu = sum(us) / len(us)
+        mz = sum(zs) / len(zs)
+        cov = sum((u - mu) * (z - mz) for u, z in zip(us, zs, strict=True))
+        var_u = sum((u - mu) ** 2 for u in us)
+        slope = cov / var_u if var_u else 0.0
+        intercept = mz - slope * mu
+        # residuals on held-out test
+        residuals = [(r, r.z_spec - (intercept + slope * r.u)) for r in test]
+        sigma = _mad_sigma([res for _, res in residuals])
+        for r, res in residuals:
+            n_sigma = abs(res) / sigma
+            if n_sigma > 4.0:
+                severity = min(1.0, (n_sigma - 4.0) / 10.0)
+                registry.register(
+                    anomaly_id=f"photoz-outlier:ra={r.ra:.4f}:dec={r.dec:.4f}",
+                    domain="sdss-photoz",
+                    kind="structured_residual",
+                    description=(
+                        f"z_spec residual {res:+.4f} ({n_sigma:.1f} sigma above "
+                        f"MAD scatter) from u-band photo-z model"
+                    ),
+                    severity=severity,
+                    object_ref=f"ra={r.ra:.4f},dec={r.dec:.4f}",
+                    details_json=json.dumps(
+                        {
+                            "u": round(r.u, 3),
+                            "z_spec": round(r.z_spec, 5),
+                            "z_pred": round(intercept + slope * r.u, 5),
+                            "residual": round(res, 5),
+                            "n_sigma": round(n_sigma, 2),
+                        }
+                    ),
+                )
+                found += 1
+
+    if CLASS_CSV.exists():
+        adapter = SDSSClassificationAdapter.from_csv(CLASS_CSV)
+        rows = adapter._rows  # type: ignore[attr-defined]
+        split = holdout_split(len(rows), train_fraction=0.5, seed=seed)
+        train = [rows[i] for i in split.train]
+        test = [rows[i] for i in split.test]
+        train_vals = [r.r - r.i for r in train]
+        train_labels = [r.is_star for r in train]
+        threshold, sign = adapter._learn_threshold(train_vals, train_labels)
+        for r in test:
+            val = r.r - r.i
+            predicted = val * sign > threshold * sign
+            if predicted != r.is_star:
+                distance = abs(val - threshold)
+                severity = min(1.0, distance / 2.0)
+                label = "STAR" if r.is_star else "non-STAR"
+                registry.register(
+                    anomaly_id=f"class-misfit:ra={r.ra:.4f}:dec={r.dec:.4f}",
+                    domain="sdss-classification",
+                    kind="template_rejection",
+                    description=(
+                        f"{label} misclassified by r-i threshold "
+                        f"(r-i={val:.3f}, threshold={threshold:.3f})"
+                    ),
+                    severity=severity,
+                    object_ref=f"ra={r.ra:.4f},dec={r.dec:.4f}",
+                    details_json=json.dumps(
+                        {
+                            "r_minus_i": round(val, 3),
+                            "threshold": round(threshold, 3),
+                            "is_star": r.is_star,
+                            "predicted_star": predicted,
+                            "distance_from_boundary": round(distance, 3),
+                        }
+                    ),
+                )
+                found += 1
+
+    return {"anomalies_found": found, "seed": seed, "registry_size": len(registry)}

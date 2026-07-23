@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .adapters import SyntheticLinearAdapter, SyntheticPhotometryAdapter, SyntheticThresholdAdapter
+from .anomaly import AnomalyRegistry
 from .bridge import transfer
 from .budget import ExecutionContext
 from .discovery import DiscoveryDriver
@@ -16,7 +17,7 @@ from .discovery_store import DiscoveryStore
 from .kernel import DiscoveryKernel
 from .ledger import EvidenceLedger
 from .models import EvidenceLevel
-from .ongoing import run_ongoing
+from .ongoing import run_anomaly_scan, run_ongoing
 from .queue import WorkQueue
 
 
@@ -145,6 +146,15 @@ def main() -> None:
     ongoing_parser.add_argument("--seed", type=int, default=None)
     ongoing_parser.add_argument("--run-id", default=None)
 
+    anomaly_parser = sub.add_parser(
+        "anomalies", help="run anomaly detection scan and show top-ranked anomalies"
+    )
+    anomaly_parser.add_argument(
+        "--registry", type=Path, default=Path(".sapiens_state/anomalies.sqlite3")
+    )
+    anomaly_parser.add_argument("--limit", type=int, default=10)
+    anomaly_parser.add_argument("--seed", type=int, default=None)
+
     args = parser.parse_args()
 
     if args.command == "discover":
@@ -171,6 +181,21 @@ def main() -> None:
                 }
                 for r in top
             ]
+    elif args.command == "anomalies":
+        result = {"experimental": True, "scientific_discoveries_claimed": 0}
+        result.update(run_anomaly_scan(args.registry, seed=args.seed))
+        anomaly_reg = AnomalyRegistry(args.registry)
+        top_anoms = anomaly_reg.top(limit=args.limit)
+        result["top_anomalies"] = [
+            {
+                "anomaly_id": a.anomaly_id,
+                "kind": a.kind,
+                "severity": round(a.severity, 3),
+                "description": a.description,
+            }
+            for a in top_anoms
+        ]
+        result["counts_by_kind"] = anomaly_reg.counts_by_kind()
     else:
         # No subcommand (backward compatible) or explicit "demo".
         workdir_arg = args.workdir if args.command == "demo" else None
