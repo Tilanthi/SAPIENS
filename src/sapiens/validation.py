@@ -226,3 +226,55 @@ def evaluate(
         pvalue=pvalue,
         reasons=tuple(reasons),
     )
+
+
+# --- multi-parameter OLS solver (Stage J) ------------------------------------------
+
+
+def _gaussian_solve(matrix: list[list[float]], vector: list[float]) -> list[float]:
+    """Solve Ax=b via Gaussian elimination with partial pivoting."""
+    n = len(vector)
+    aug = [list(matrix[i]) + [vector[i]] for i in range(n)]
+    for col in range(n):
+        pivot = max(range(col, n), key=lambda r: abs(aug[r][col]))
+        aug[col], aug[pivot] = aug[pivot], aug[col]
+        if abs(aug[col][col]) < 1e-12:
+            continue
+        for row in range(col + 1, n):
+            factor = aug[row][col] / aug[col][col]
+            for k in range(col, n + 1):
+                aug[row][k] -= factor * aug[col][k]
+    x = [0.0] * n
+    for i in range(n - 1, -1, -1):
+        x[i] = aug[i][n]
+        for j in range(i + 1, n):
+            x[i] -= aug[i][j] * x[j]
+        if abs(aug[i][i]) > 1e-12:
+            x[i] /= aug[i][i]
+    return x
+
+
+def ols_fit_predict(
+    x_train: list[list[float]], y_train: list[float], x_test: list[list[float]]
+) -> list[float]:
+    """Ordinary least squares: fit on train, predict on test. Pure stdlib.
+
+    Enables multi-parameter model-fitting validation (Stage J) — replaces the
+    single-predictor Pearson-only mode with full linear-regression residuals.
+    """
+    n_features = len(x_train[0]) if x_train else 0
+    dim = n_features + 1  # + intercept
+    xtx = [[0.0] * dim for _ in range(dim)]
+    xty = [0.0] * dim
+    for i in range(len(y_train)):
+        row = list(x_train[i]) + [1.0]
+        for a in range(dim):
+            for b in range(dim):
+                xtx[a][b] += row[a] * row[b]
+            xty[a] += row[a] * y_train[i]
+    beta = _gaussian_solve(xtx, xty)
+    predictions: list[float] = []
+    for x in x_test:
+        row = list(x) + [1.0]
+        predictions.append(sum(beta[a] * row[a] for a in range(dim)))
+    return predictions
