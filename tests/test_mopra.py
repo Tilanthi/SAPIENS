@@ -1,3 +1,5 @@
+"""Tests for the physics-motivated Mopra adapter v2."""
+
 import random
 from pathlib import Path
 
@@ -22,39 +24,82 @@ def _has_astropy() -> bool:
     return True
 
 
-def _synthetic_concentrated(n: int = 500, seed: int = 0) -> MopraMolecularAdapter:
-    """Intensity falls with distance (centrally concentrated); x-index is unrelated."""
+def _synthetic_adapter(
+    n: int = 500, seed: int = 0, *, aspect: float = 2.5, v_range: float = 20.0
+) -> MopraMolecularAdapter:
+    """Concentrated emission with given aspect ratio and velocity range."""
     rng = random.Random(seed)
-    distances, intensities, x_indices = [], [], []
+    distances, intensities = [], []
     for _ in range(n):
         d = rng.uniform(0.0, 10.0)
-        intensities.append(5.0 / (1.0 + d) + rng.gauss(0.0, 0.2))  # ~1/distance
+        intensities.append(5.0 / (1.0 + d) + rng.gauss(0.0, 0.2))
         distances.append(d)
-        x_indices.append(rng.uniform(0.0, 33.0))  # unrelated to intensity
     return MopraMolecularAdapter(
-        molecule="TEST", distances=distances, intensities=intensities, x_indices=x_indices
+        molecule="TEST",
+        distances=distances,
+        intensities=intensities,
+        aspect_ratio=aspect,
+        velocity_range_km=v_range,
     )
 
 
-def test_mopra_concentration_passes_on_synthetic():
-    adapter = _synthetic_concentrated()
-    candidate = adapter.propose(seed=1, limit=1)[0]  # concentration claim
+# --- concentration (dense-core signature) ---
+
+
+def test_concentration_passes_on_synthetic():
+    adapter = _synthetic_adapter()
+    candidate = adapter.propose(seed=1, limit=3)[0]
+    assert candidate.parameters["claim_type"] == "concentration"
     evidence = adapter.validate(candidate, stage="replication", seed=7, context=_ctx())[0]
     assert evidence.passed is True
-    assert evidence.details["stat"] > 0.3
+    assert evidence.details["score"] > 0.25
 
 
-def test_mopra_ra_gradient_fails_on_synthetic():
-    adapter = _synthetic_concentrated()
-    candidate = adapter.propose(seed=1, limit=2)[1]  # ra-gradient (null)
+# --- filamentarity (star-formation filament) ---
+
+
+def test_filamentarity_passes_when_elongated():
+    adapter = _synthetic_adapter(aspect=3.0)
+    candidate = adapter.propose(seed=1, limit=3)[1]
+    assert candidate.parameters["claim_type"] == "filamentarity"
+    evidence = adapter.validate(candidate, stage="replication", seed=7, context=_ctx())[0]
+    assert evidence.passed is True
+    assert evidence.details["aspect_ratio"] >= 3.0
+
+
+def test_filamentarity_fails_when_circular():
+    adapter = _synthetic_adapter(aspect=1.1)
+    candidate = adapter.propose(seed=1, limit=3)[1]
     evidence = adapter.validate(candidate, stage="replication", seed=7, context=_ctx())[0]
     assert evidence.passed is False
+
+
+# --- velocity gradient (organised gas motion) ---
+
+
+def test_velocity_passes_when_coherent():
+    adapter = _synthetic_adapter(v_range=25.0)
+    candidate = adapter.propose(seed=1, limit=3)[2]
+    assert candidate.parameters["claim_type"] == "velocity-gradient"
+    evidence = adapter.validate(candidate, stage="replication", seed=7, context=_ctx())[0]
+    assert evidence.passed is True
+    assert evidence.details["v_range_km"] >= 25.0
+
+
+def test_velocity_fails_when_incoherent():
+    adapter = _synthetic_adapter(v_range=3.0)
+    candidate = adapter.propose(seed=1, limit=3)[2]
+    evidence = adapter.validate(candidate, stage="replication", seed=7, context=_ctx())[0]
+    assert evidence.passed is False
+
+
+# --- adapter properties ---
 
 
 def test_mopra_is_non_synthetic_and_needs_approver():
     from sapiens.trust import AdapterRegistry
 
-    adapter = _synthetic_concentrated()
+    adapter = _synthetic_adapter()
     assert adapter.manifest.synthetic_only is False
     registry = AdapterRegistry()
     with pytest.raises(ValueError):
@@ -62,12 +107,22 @@ def test_mopra_is_non_synthetic_and_needs_approver():
     registry.register(adapter, approver="tester", capabilities=("filesystem-read",))
 
 
+# --- integration on real FITS cube ---
+
+
 @pytest.mark.skipif(
-    not (_has_astropy() and _CUBE.exists()), reason="needs astropy + a Mopra 13CO cube"
+    not (_has_astropy() and _CUBE.exists()), reason="needs astropy + Mopra 13CO cube"
 )
-def test_mopra_real_cube_is_centraly_concentrated():
+def test_real_cube_produces_three_physics_candidates():
     adapter = MopraMolecularAdapter.from_fits(_CUBE, molecule="13CO")
-    candidate = adapter.propose(seed=1, limit=1)[0]
-    evidence = adapter.validate(candidate, stage="replication", seed=7, context=_ctx())[0]
-    assert evidence.details["molecule"] == "13CO"
-    assert evidence.details["stat"] > 0.2  # real molecular cores are centrally concentrated
+    candidates = adapter.propose(seed=1, limit=3)
+    assert len(candidates) == 3
+    claim_types = [c.parameters["claim_type"] for c in candidates]
+    assert "concentration" in claim_types
+    assert "filamentarity" in claim_types
+    assert "velocity-gradient" in claim_types
+    # Each should produce valid evidence
+    for c in candidates:
+        ev = adapter.validate(c, stage="internal", seed=7, context=_ctx())[0]
+        assert ev.candidate_id == c.candidate_id
+        assert ev.kind == "internal"

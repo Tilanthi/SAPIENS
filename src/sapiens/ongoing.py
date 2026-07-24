@@ -93,7 +93,7 @@ def _available_sources(seed: int) -> list:
             base = MopraMolecularAdapter.from_fits(cube_path, molecule=molecule)
         except Exception:
             continue  # astropy missing or unreadable cube -> skip silently
-        sources.append((base, list(base.propose(seed=seed, limit=2))))
+        sources.append((base, list(base.propose(seed=seed, limit=3))))
 
     return sources
 
@@ -532,7 +532,10 @@ def build_shortlist_from_store(
 
     scores = []
     for cid, domain, claim, level, score in rows:
-        has_mechanism = "concentrat" in claim.lower()
+        has_mechanism = any(
+            kw in claim.lower()
+            for kw in ("concentrat", "filament", "velocity", "elongat")
+        )
         has_replication = level >= 2
         cs = score_candidate(
             candidate_id=cid,
