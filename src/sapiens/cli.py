@@ -18,6 +18,7 @@ from .kernel import DiscoveryKernel
 from .ledger import EvidenceLedger
 from .models import EvidenceLevel
 from .ongoing import (
+    build_shortlist_from_store,
     detect_model_mismatch,
     record_tensions,
     run_anomaly_scan,
@@ -169,6 +170,14 @@ def main() -> None:
     )
     substrate_parser.add_argument("--seed", type=int, default=None)
 
+    shortlist_parser = sub.add_parser(
+        "shortlist", help="ranked top-K shortlist for human L4 review (recalibrated)"
+    )
+    shortlist_parser.add_argument(
+        "--store", type=Path, default=Path(".sapiens_state/discovery.sqlite3")
+    )
+    shortlist_parser.add_argument("--limit", type=int, default=10)
+
     args = parser.parse_args()
 
     if args.command == "discover":
@@ -239,6 +248,27 @@ def main() -> None:
             }
             for t in tensions[:5]
         ]
+    elif args.command == "shortlist":
+        shortlist = build_shortlist_from_store(args.store, k=args.limit)
+        result = {
+            "experimental": True,
+            "scientific_discoveries_claimed": 0,
+            "shortlist_size": len(shortlist),
+            "candidates": [
+                {
+                    "candidate_id": s.candidate_id,
+                    "domain": s.domain,
+                    "claim": s.claim,
+                    "promotion_score": s.promotion_score,
+                    "anomaly_priority": s.anomaly_priority,
+                    "rank": s.shortlist_rank,
+                    "ledger_status": s.ledger_status,
+                    "confidence": s.confidence,
+                    "rationale": s.rationale,
+                }
+                for s in shortlist
+            ],
+        }
     else:
         # No subcommand (backward compatible) or explicit "demo".
         workdir_arg = args.workdir if args.command == "demo" else None

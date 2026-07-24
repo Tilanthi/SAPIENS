@@ -504,3 +504,45 @@ def run_sieve(anomaly_registry_path: str | Path, *, seed: int | None = None) -> 
             for r in results
         ],
     }
+
+
+# --- recalibrated shortlist (Gates Recalibration R1-R7) --------------------------
+
+
+def build_shortlist_from_store(
+    store_path: str | Path, *, k: int = 10
+) -> list:
+    """Read candidates from the discovery store and build a recalibrated shortlist.
+
+    Applies the Gates Recalibration promotion function: promotion_score (evidence
+    quality) + anomaly_priority (paradigm-breaker signal) = shortlist_rank.
+    Reserved slots for UNEXPLAINED_CONFIRMED. UNCALIBRATED candidates surfaced
+    (not refused). Human L4 gate stays final.
+    """
+    import sqlite3
+
+    from .shortlist import build_shortlist as _build
+    from .shortlist import score_candidate
+
+    con = sqlite3.connect(str(store_path))
+    rows = con.execute(
+        "SELECT candidate_id, domain, claim, final_level, score FROM candidates"
+    ).fetchall()
+    con.close()
+
+    scores = []
+    for cid, domain, claim, level, score in rows:
+        has_mechanism = "concentrat" in claim.lower()
+        has_replication = level >= 2
+        cs = score_candidate(
+            candidate_id=cid,
+            domain=domain,
+            claim=claim,
+            evidence_score=score,
+            evidence_level=level,
+            has_mechanism=has_mechanism,
+            has_replication=has_replication,
+        )
+        scores.append(cs)
+
+    return _build(scores, k=k)
